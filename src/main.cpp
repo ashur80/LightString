@@ -4,33 +4,89 @@
 
 #include "BlinkLightChain.hpp"
 #include <LiquidCrystal.h>
+// main.cpp
+// Simple controller for a light-chain and LCD backlight.
+// - Uses `BlinkLightChain` to control a separate light-chain output pin.
+// - Adjusts LCD backlight color per mode using PWM (inverted values for active-low hardware).
+// - Button cycles modes between fast, slow, always-on, and off.
+//
+// Notes:
+// - Timing uses `millis()` and unsigned arithmetic to tolerate overflow.
+// - Special delay sentinels are defined in `include/BlinkLightChain.hpp`.
+// LCD Configuration
+constexpr int LCD_RS = 2;
+constexpr int LCD_EN = 3;
+constexpr int LCD_D4 = 5;
+constexpr int LCD_D5 = 6;
+constexpr int LCD_D6 = 7;
+constexpr int LCD_D7 = 8;
+constexpr int LCD_COLS = 16;
+constexpr int LCD_ROWS = 2;
 
-LiquidCrystal lcd(2, 3, 5, 6, 7, 8);
+// LCD backlight pin configuration
+constexpr int LCD_BACKLIGHT_BLUE_PIN = 9;
+constexpr int LCD_BACKLIGHT_GREEN_PIN = 10;
+constexpr int LCD_BACKLIGHT_RED_PIN = 11;
 
-const int ROT[] = {0, 100, 0xFF, 0};
-const int GRUEN[] = {100, 10, 0x35, 0};
-const int BLAU[] = {0, 100, 0x00, 0};
+// Button / light-chain control pin
+constexpr int BUTTON_PIN = 12;
+constexpr int LIGHT_CHAIN_PIN = 4;
+
+// Timing constants
+constexpr unsigned long STARTUP_DELAY_MS = 1000UL;
+constexpr unsigned long LOOP_POLL_MS = 100UL;
+constexpr unsigned long BLINK_FAST_MS = 500UL;
+constexpr unsigned long BLINK_SLOW_MS = 5000UL;
+
+// Mode indices
+enum ModeIndex { MODE_FAST = 0, MODE_SLOW = 1, MODE_ON = 2, MODE_OFF = 3 };
+constexpr int NUM_MODES = 4;
+
+LiquidCrystal lcd(LCD_RS, LCD_EN, LCD_D4, LCD_D5, LCD_D6, LCD_D7);
+
+// Color struct for LCD backlight levels (0-255). Using a single struct
+// makes the code clearer than parallel arrays and groups RGB values
+// per mode in one place.
+struct Color {
+    uint8_t r; // red channel (0..255)
+    uint8_t g; // green channel
+    uint8_t b; // blue channel
+};
+
+// Colors per mode: {R, G, B}
+// Keep these constexpr so they live in flash/ROM on AVR boards.
+constexpr Color COLORS[NUM_MODES] = {
+    { 0,   100,  0   }, // MODE_FAST: mostly green
+    { 100, 10,   100 }, // MODE_SLOW: pink
+    { 0xFF, 0x35, 0x00 }, // MODE_ON: ornage
+    { 0,   0,    0   }  // MODE_OFF: backlight off
+};
 
 bool prevVal = false;
 
 int curState = 0;
-const int maxStates = 4;
+const int maxStates = NUM_MODES;
 
-const uint16_t states[] = {500, 5000, 0, UINT16_MAX};
+const unsigned long states[NUM_MODES] = {BLINK_FAST_MS, BLINK_SLOW_MS, BLINK_ALWAYS_ON, BLINK_ALWAYS_OFF};
 
-BlinkLightChain blc(4, states[0]);
+BlinkLightChain blc(LIGHT_CHAIN_PIN, states[MODE_FAST]);
 
 void setup()
 {
-    pinMode(12, INPUT); // set button INPUT
-    pinMode(4, OUTPUT);
-    // set up the LCD's number of columns and rows:
+    // Configure pins
+    pinMode(BUTTON_PIN, INPUT);
+    pinMode(LIGHT_CHAIN_PIN, OUTPUT);
 
-    lcd.begin(16, 2);
+    // Initialize LCD with number of columns/rows
+    lcd.begin(LCD_COLS, LCD_ROWS);
 
-    analogWrite(9, 0xFF - BLAU[0]);
-    analogWrite(10, 0xFF - GRUEN[0]);
-    analogWrite(11, 0xFF - ROT[0]);
+    // Set initial LCD backlight using inverted PWM values. The hardware
+    // uses active-low backlight control, so we invert the 0..255 values
+    // before writing to the PWM pins.
+    constexpr int MAX_PWM = 0xFF;
+    analogWrite(LCD_BACKLIGHT_BLUE_PIN, MAX_PWM - COLORS[0].b);
+    analogWrite(LCD_BACKLIGHT_GREEN_PIN, MAX_PWM - COLORS[0].g);
+    analogWrite(LCD_BACKLIGHT_RED_PIN, MAX_PWM - COLORS[0].r);
 
     // Print a message to the LCD.
     lcd.print("Merry Christmas!");
@@ -39,24 +95,31 @@ void setup()
 
     blc.init();
 
-    delay(1000);
+    delay(STARTUP_DELAY_MS);
 }
 
 void loop()
 {
-    delay(100);
-    const bool button = digitalRead(12) == LOW;
+    // Simple polling loop. `delay` here reduces CPU usage; 
+    delay(LOOP_POLL_MS);
+
+    // Read button (assumes LOW when pressed)
+    const bool button = digitalRead(BUTTON_PIN) == LOW;
     if (button != prevVal)
     {
         prevVal = button;
         if (button)
         {
             curState = (curState + 1) % maxStates;
+            // Update backlight color for the newly selected mode
+            constexpr int MAX_PWM = 0xFF;
+            analogWrite(LCD_BACKLIGHT_BLUE_PIN, MAX_PWM - COLORS[curState].b);
+            analogWrite(LCD_BACKLIGHT_GREEN_PIN, MAX_PWM - COLORS[curState].g);
+            analogWrite(LCD_BACKLIGHT_RED_PIN, MAX_PWM - COLORS[curState].r);
 
-            analogWrite(9, 0xFF - BLAU[curState]);
-            analogWrite(10, 0xFF - GRUEN[curState]);
-            analogWrite(11, 0xFF - ROT[curState]);
-
+            // Notify the blink controller of the new mode's timing.
+            // `setDelay` uses sentinel values (defined in the header)
+            // to indicate always-on / always-off.
             blc.setDelay(states[curState]);
         }
     }
